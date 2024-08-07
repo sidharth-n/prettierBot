@@ -52,7 +52,7 @@ async function sendOptionsKeyboard(chatId, text, fetch) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         chat_id: chatId,
-        text: text,
+
         reply_markup: {
           inline_keyboard: [
             [{ text: "Correct Grammar", callback_data: "correct" }],
