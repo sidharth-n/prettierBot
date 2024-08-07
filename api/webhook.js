@@ -24,10 +24,18 @@ module.exports = async (req, res) => {
           const userText = message.text
           console.log(`Received message: ${userText} (${chatId})`)
 
-          // Save user message in conversation history
-          conversationHistory[chatId].push({ role: "user", content: userText })
+          if (userText === "/start") {
+            // Handle /start command
+            await sendIntroduction(chatId, fetch)
+          } else {
+            // Save user message in conversation history
+            conversationHistory[chatId].push({
+              role: "user",
+              content: userText,
+            })
 
-          await sendOptionsKeyboard(chatId, userText, fetch)
+            await sendOptionsKeyboard(chatId, userText, fetch)
+          }
         } else if (callbackQuery) {
           // Handle button clicks
           await handleCallbackQuery(chatId, callbackQuery, fetch)
@@ -46,6 +54,32 @@ module.exports = async (req, res) => {
     console.error("Unhandled error:", error)
     res.status(500).send("Internal Server Error")
   }
+}
+
+async function sendIntroduction(chatId, fetch) {
+  const introText =
+    "Welcome to Prettier Bot! 👋\n\n" +
+    "This bot is here to help you simplify your writings. " +
+    "Just copy-paste or type your text here, and I'll help you work on it before you send it to somebody else.\n\n" +
+    "You can use the following options:\n" +
+    "• Correct Grammar\n" +
+    "• Make Shorter\n" +
+    "• Make Longer\n" +
+    "• Create Variation\n" +
+    "• Add Emojis\n\n" +
+    "Go ahead, send me some text to get started!"
+
+  await fetch(
+    `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: introText,
+      }),
+    }
+  )
 }
 
 async function sendOptionsKeyboard(chatId, text, fetch) {
@@ -88,7 +122,7 @@ async function handleCallbackQuery(chatId, callbackQuery, fetch) {
       break
     case "longer":
       prompt =
-        "Make the following text longer y 20% without changing its main meaning: "
+        "Make the following text longer by 20% without changing its main meaning: "
       break
     case "variation":
       prompt = "Create a variation of the following text with similar length: "
