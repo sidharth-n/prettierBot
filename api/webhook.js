@@ -61,10 +61,9 @@ async function sendIntroduction(chatId, fetch) {
     "Welcome to Prettier Bot! 👋\n\n" +
     "This bot is here to help you simplify your writings. " +
     "Just copy-paste or type your text here, and I'll help you work on it before you send it to somebody else.\n\n" +
-    "You can use the following options:\n" +
-    "• Correct Grammar\n" +
-    "• Make Shorter\n" +
-    "• Make Longer\n" +
+    "You can use it for the following options:\n" +
+    "• Correct Grammar and Spellings\n" +
+    "• Make the text Shorter/Longer\n" +
     "• Create Variation\n" +
     "• Add Emojis\n\n" +
     "Go ahead, send me some text to get started!"
@@ -118,7 +117,7 @@ async function handleCallbackQuery(chatId, callbackQuery, fetch) {
       break
     case "shorter":
       prompt =
-        "Make the following text shorter by 20% without changing its meaning: "
+        "Make the following text shorter by 20% without changing its main meaning: "
       break
     case "longer":
       prompt =
