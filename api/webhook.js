@@ -14,13 +14,17 @@ module.exports = async (req, res) => {
 
         const fetch = (await import("node-fetch")).default
 
+        // Initialize conversation history for this chat if it doesn't exist
+        if (!conversationHistory[chatId]) {
+          conversationHistory[chatId] = []
+        }
+
         if (message && message.text) {
           // Handle text
           const userText = message.text
           console.log(`Received message: ${userText} (${chatId})`)
 
           // Save user message in conversation history
-          conversationHistory[chatId] = conversationHistory[chatId] || []
           conversationHistory[chatId].push({ role: "user", content: userText })
 
           await sendOptionsKeyboard(chatId, userText, fetch)
@@ -97,6 +101,18 @@ async function handleCallbackQuery(chatId, callbackQuery, fetch) {
 
   // Edit the original message instead of sending a new one
   await editMessage(chatId, messageId, gptResponse, fetch)
+
+  // Acknowledge the callback query to remove the loading indicator
+  await fetch(
+    `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        callback_query_id: callbackQuery.id,
+      }),
+    }
+  )
 }
 
 async function editMessage(chatId, messageId, text, fetch) {
@@ -149,18 +165,4 @@ async function getGPTResponse(chatId, prompt, fetch) {
   const botResponse = data.choices[0].message.content
   conversationHistory[chatId].push({ role: "assistant", content: botResponse })
   return botResponse
-}
-
-async function sendMessage(chatId, text, fetch) {
-  await fetch(
-    `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text: text,
-      }),
-    }
-  )
 }
