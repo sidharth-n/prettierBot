@@ -1,10 +1,3 @@
-import fetch from "node-fetch"
-
-const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN
-const OPEN_AI_KEY = process.env.OPEN_AI_KEY
-
-const conversationHistory = {}
-
 module.exports = async (req, res) => {
   try {
     if (req.method === "POST") {
@@ -17,10 +10,17 @@ module.exports = async (req, res) => {
         const chatId = message ? message.chat.id : callbackQuery.message.chat.id
         console.log(`Processing request for chat ID: ${chatId}`)
 
+        const fetch = (await import("node-fetch")).default
+
         if (message && message.text) {
-          await handleTextMessage(chatId, message.text)
+          // Handle text
+          const userText = message.text
+          console.log(`Received message: ${userText} (${chatId})`)
+
+          await sendOptionsKeyboard(chatId, userText, fetch)
         } else if (callbackQuery) {
-          await handleCallbackQuery(chatId, callbackQuery)
+          // Handle button clicks
+          await handleCallbackQuery(chatId, callbackQuery, fetch)
         }
 
         res.status(200).send("OK")
@@ -38,14 +38,30 @@ module.exports = async (req, res) => {
   }
 }
 
-async function handleTextMessage(chatId, text) {
-  conversationHistory[chatId] = conversationHistory[chatId] || []
-  conversationHistory[chatId].push({ role: "user", content: text })
-
-  await sendOptionsKeyboard(chatId, text)
+async function sendOptionsKeyboard(chatId, text, fetch) {
+  await fetch(
+    `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: text,
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: "Correct Grammar", callback_data: "correct" }],
+            [{ text: "Make Shorter", callback_data: "shorter" }],
+            [{ text: "Make Longer", callback_data: "longer" }],
+            [{ text: "Create Variation", callback_data: "variation" }],
+            [{ text: "Add Emojis", callback_data: "emojis" }],
+          ],
+        },
+      }),
+    }
+  )
 }
 
-async function handleCallbackQuery(chatId, callbackQuery) {
+async function handleCallbackQuery(chatId, callbackQuery, fetch) {
   const data = callbackQuery.data
   const originalText = callbackQuery.message.text.split("\n")[0]
 
@@ -70,17 +86,16 @@ async function handleCallbackQuery(chatId, callbackQuery) {
       break
   }
 
-  const gptResponse = await getGPTResponse(chatId, prompt + originalText)
-  await sendMessage(chatId, gptResponse)
-  await sendOptionsKeyboard(chatId, gptResponse)
+  const gptResponse = await getGPTResponse(prompt + originalText, fetch)
+  await sendMessage(chatId, gptResponse, fetch)
 }
 
-async function getGPTResponse(chatId, prompt) {
+async function getGPTResponse(prompt, fetch) {
   const response = await fetch("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${OPEN_AI_KEY}`,
+      Authorization: `Bearer ${process.env.OPEN_AI_KEY}`,
     },
     body: JSON.stringify({
       model: "gpt-4",
@@ -90,7 +105,6 @@ async function getGPTResponse(chatId, prompt) {
           content:
             "You are Prettier, a Telegram bot designed to help users improve and modify their text.",
         },
-        ...conversationHistory[chatId].slice(-5),
         { role: "user", content: prompt },
       ],
       temperature: 0.7,
@@ -98,38 +112,19 @@ async function getGPTResponse(chatId, prompt) {
   })
 
   const data = await response.json()
-  const botResponse = data.choices[0].message.content
-  conversationHistory[chatId].push({ role: "assistant", content: botResponse })
-  return botResponse
+  return data.choices[0].message.content
 }
 
-async function sendOptionsKeyboard(chatId, text) {
-  await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      chat_id: chatId,
-      text: text,
-      reply_markup: {
-        inline_keyboard: [
-          [{ text: "Correct Grammar", callback_data: "correct" }],
-          [{ text: "Make Shorter", callback_data: "shorter" }],
-          [{ text: "Make Longer", callback_data: "longer" }],
-          [{ text: "Create Variation", callback_data: "variation" }],
-          [{ text: "Add Emojis", callback_data: "emojis" }],
-        ],
-      },
-    }),
-  })
-}
-
-async function sendMessage(chatId, text) {
-  await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      chat_id: chatId,
-      text: text,
-    }),
-  })
+async function sendMessage(chatId, text, fetch) {
+  await fetch(
+    `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: text,
+      }),
+    }
+  )
 }
