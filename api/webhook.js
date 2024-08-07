@@ -70,10 +70,7 @@ async function sendOptionsKeyboard(chatId, text, fetch) {
 async function handleCallbackQuery(chatId, callbackQuery, fetch) {
   const data = callbackQuery.data
   const messageId = callbackQuery.message.message_id
-  const originalText = callbackQuery.message.text.split("\n")[0]
-
-  // Remove the message with the buttons
-  await removeMessage(chatId, messageId, fetch)
+  const originalText = callbackQuery.message.text
 
   let prompt = ""
   switch (data) {
@@ -97,19 +94,30 @@ async function handleCallbackQuery(chatId, callbackQuery, fetch) {
   }
 
   const gptResponse = await getGPTResponse(chatId, prompt + originalText, fetch)
-  await sendMessage(chatId, gptResponse, fetch)
-  await sendOptionsKeyboard(chatId, gptResponse, fetch)
+
+  // Edit the original message instead of sending a new one
+  await editMessage(chatId, messageId, gptResponse, fetch)
 }
 
-async function removeMessage(chatId, messageId, fetch) {
+async function editMessage(chatId, messageId, text, fetch) {
   await fetch(
-    `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/deleteMessage`,
+    `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/editMessageText`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         chat_id: chatId,
         message_id: messageId,
+        text: text,
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: "Correct Grammar", callback_data: "correct" }],
+            [{ text: "Make Shorter", callback_data: "shorter" }],
+            [{ text: "Make Longer", callback_data: "longer" }],
+            [{ text: "Create Variation", callback_data: "variation" }],
+            [{ text: "Add Emojis", callback_data: "emojis" }],
+          ],
+        },
       }),
     }
   )
