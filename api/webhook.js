@@ -80,14 +80,15 @@ async function handleCallbackQuery(chatId, callbackQuery, fetch) {
   switch (data) {
     case "correct":
       prompt =
-        "Just correct the grammar and spelling of the following and return. Make no other changes: "
+        "Just correct the grammar and spelling of the following and return : "
       break
     case "shorter":
-      prompt = "Make the following text shorter without changing its meaning: "
+      prompt =
+        "Make the following text shorter by 20% without changing its meaning: "
       break
     case "longer":
       prompt =
-        "Make the following text longer without changing its main meaning: "
+        "Make the following text longer y 20% without changing its main meaning: "
       break
     case "variation":
       prompt = "Create a variation of the following text with similar length: "
