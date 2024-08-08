@@ -14,35 +14,34 @@ module.exports = async (req, res) => {
 
       const message = req.body.message
       const callbackQuery = req.body.callback_query
+      const pollAnswer = req.body.poll_answer
 
-      if (message || callbackQuery) {
-        const chatId = message ? message.chat.id : callbackQuery.message.chat.id
+      if (message || callbackQuery || pollAnswer) {
+        const chatId = message
+          ? message.chat.id
+          : callbackQuery
+          ? callbackQuery.message.chat.id
+          : pollAnswer.user.id
         console.log(`Processing request for chat ID: ${chatId}`)
 
         const fetch = (await import("node-fetch")).default
 
-        // Initialize conversation history for this chat if it doesn't exist
         if (!conversationHistory[chatId]) {
           conversationHistory[chatId] = []
         }
 
         if (message && message.text) {
-          // Handle text
           const userText = message.text
           console.log(`Received message: ${userText} (${chatId})`)
 
-          // Ensure user exists in the database
           await ensureUser(chatId, message.from)
 
           if (userText === "/start") {
-            // Handle /start command
             await sendIntroduction(chatId, fetch)
             await startConfiguration(chatId, fetch)
           } else if (userText === "/config") {
-            // Handle /config command
             await startConfiguration(chatId, fetch)
           } else {
-            // Save user message in conversation history
             conversationHistory[chatId].push({
               role: "user",
               content: userText,
@@ -52,14 +51,15 @@ module.exports = async (req, res) => {
             await sendOptionsKeyboard(chatId, userText, fetch, userConfig)
           }
         } else if (callbackQuery) {
-          // Handle button clicks
           await handleCallbackQuery(chatId, callbackQuery, fetch)
+        } else if (pollAnswer) {
+          await handlePollAnswer(chatId, pollAnswer)
         }
 
         res.status(200).send("OK")
       } else {
-        console.log("No message or callback query found")
-        res.status(200).send("No message or callback query found")
+        console.log("No message, callback query, or poll answer found")
+        res.status(200).send("No message, callback query, or poll answer found")
       }
     } else {
       console.log(`Received ${req.method} request`)
@@ -99,12 +99,10 @@ async function getUserConfig(chatId) {
       sql: "SELECT config FROM user_configs WHERE chat_id = ?",
       args: [chatId],
     })
-    return rows.length > 0
-      ? JSON.parse(rows[0].config)
-      : ["correct", "shorter", "longer", "variation", "emojis"]
+    return rows.length > 0 ? JSON.parse(rows[0].config) : []
   } catch (error) {
     console.error(`Error getting user config: ${error.message}`)
-    return ["correct", "shorter", "longer", "variation", "emojis"]
+    return []
   }
 }
 
@@ -142,19 +140,41 @@ async function sendIntroduction(chatId, fetch) {
 async function startConfiguration(chatId, fetch) {
   const configText =
     "Configure your commands. Select the options you'd like to use:\n\n" +
-    "Selecting a single option will keep it as the default option."
+    "You can select multiple options. Your current selection will be shown."
 
   const options = [
-    { text: "Correct Grammar", callback_data: "config_correct" },
-    { text: "Make Shorter", callback_data: "config_shorter" },
-    { text: "Make Longer", callback_data: "config_longer" },
-    { text: "Create Variation", callback_data: "config_variation" },
-    { text: "Add Emojis", callback_data: "config_emojis" },
-    { text: "Finish Configuration", callback_data: "config_finish" },
+    "Correct Grammar",
+    "Make Shorter",
+    "Make Longer",
+    "Create Variation",
+    "Add Emojis",
   ]
 
-  const inlineKeyboard = options.map(option => [option])
+  const userConfig = await getUserConfig(chatId)
 
+  const { result } = await fetch(
+    `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendPoll`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        question: configText,
+        options: options,
+        is_anonymous: false,
+        allows_multiple_answers: true,
+        type: "regular",
+      }),
+    }
+  ).then(res => res.json())
+
+  // Store the poll id for later use
+  await client.execute({
+    sql: "INSERT OR REPLACE INTO active_polls (chat_id, poll_id) VALUES (?, ?)",
+    args: [chatId, result.poll.id],
+  })
+
+  // Send "Finish Configuration" button
   await fetch(
     `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
     {
@@ -162,46 +182,59 @@ async function startConfiguration(chatId, fetch) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         chat_id: chatId,
-        text: configText,
+        text: "When you're done selecting options, click the button below:",
         reply_markup: {
-          inline_keyboard: inlineKeyboard,
+          inline_keyboard: [
+            [{ text: "Finish Configuration", callback_data: "finish_config" }],
+          ],
         },
       }),
     }
   )
 }
 
-async function sendOptionsKeyboard(chatId, text, fetch, userConfig) {
-  const options = userConfig.map(option => {
-    const optionText = option.charAt(0).toUpperCase() + option.slice(1)
-    return [{ text: optionText, callback_data: option }]
+async function handlePollAnswer(chatId, pollAnswer) {
+  const selectedOptions = pollAnswer.option_ids.map(id => {
+    switch (id) {
+      case 0:
+        return "correct"
+      case 1:
+        return "shorter"
+      case 2:
+        return "longer"
+      case 3:
+        return "variation"
+      case 4:
+        return "emojis"
+    }
   })
 
-  await fetch(
-    `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text: text,
-        reply_markup: {
-          inline_keyboard: options,
-        },
-      }),
-    }
-  )
+  await saveUserConfig(chatId, selectedOptions)
 }
 
 async function handleCallbackQuery(chatId, callbackQuery, fetch) {
   const data = callbackQuery.data
-  const messageId = callbackQuery.message.message_id
-  const originalText = callbackQuery.message.text
 
-  if (data.startsWith("config_")) {
-    await handleConfigCallback(chatId, data, fetch, messageId)
+  if (data === "finish_config") {
+    const userConfig = await getUserConfig(chatId)
+    await fetch(
+      `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text: `Configuration complete. Your selected options are: ${userConfig.join(
+            ", "
+          )}`,
+        }),
+      }
+    )
     return
   }
+
+  const messageId = callbackQuery.message.message_id
+  const originalText = callbackQuery.message.text
 
   let prompt = ""
   switch (data) {
@@ -227,10 +260,8 @@ async function handleCallbackQuery(chatId, callbackQuery, fetch) {
 
   const gptResponse = await getGPTResponse(chatId, prompt + originalText, fetch)
 
-  // Edit the original message instead of sending a new one
   await editMessage(chatId, messageId, gptResponse, fetch)
 
-  // Acknowledge the callback query to remove the loading indicator
   await fetch(
     `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`,
     {
@@ -243,62 +274,26 @@ async function handleCallbackQuery(chatId, callbackQuery, fetch) {
   )
 }
 
-async function handleConfigCallback(chatId, data, fetch, messageId) {
-  if (data === "config_finish") {
-    const userConfig = await getUserConfig(chatId)
-    await saveUserConfig(chatId, userConfig)
-    await fetch(
-      `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          chat_id: chatId,
-          text: "Configuration complete. You can now use the bot with your selected options.",
-        }),
-      }
-    )
-  } else {
-    const option = data.replace("config_", "")
-    let userConfig = await getUserConfig(chatId)
-    if (userConfig.includes(option)) {
-      userConfig = userConfig.filter(item => item !== option)
-    } else {
-      userConfig.push(option)
+async function sendOptionsKeyboard(chatId, text, fetch, userConfig) {
+  const options = userConfig.map(option => {
+    const optionText = option.charAt(0).toUpperCase() + option.slice(1)
+    return [{ text: optionText, callback_data: option }]
+  })
+
+  await fetch(
+    `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: text,
+        reply_markup: {
+          inline_keyboard: options,
+        },
+      }),
     }
-    await saveUserConfig(chatId, userConfig)
-
-    // Update the configuration message
-    const configText =
-      "Current configuration:\n" +
-      userConfig.join(", ") +
-      "\n\nSelect more options or finish configuration."
-    const options = [
-      { text: "Correct Grammar", callback_data: "config_correct" },
-      { text: "Make Shorter", callback_data: "config_shorter" },
-      { text: "Make Longer", callback_data: "config_longer" },
-      { text: "Create Variation", callback_data: "config_variation" },
-      { text: "Add Emojis", callback_data: "config_emojis" },
-      { text: "Finish Configuration", callback_data: "config_finish" },
-    ]
-    const inlineKeyboard = options.map(option => [option])
-
-    await fetch(
-      `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/editMessageText`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          chat_id: chatId,
-          message_id: messageId,
-          text: configText,
-          reply_markup: {
-            inline_keyboard: inlineKeyboard,
-          },
-        }),
-      }
-    )
-  }
+  )
 }
 
 async function editMessage(chatId, messageId, text, fetch) {
