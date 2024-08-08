@@ -140,7 +140,7 @@ async function sendIntroduction(chatId, fetch) {
 
 async function startConfiguration(chatId, fetch) {
   const configText =
-    "Set your prefered commands.\n\n" + "You can select multiple options."
+    "Set your prefered commands.\n" + "You can select multiple options."
 
   const options = [
     "Correct Grammar and spelling",
@@ -210,10 +210,7 @@ async function handleCallbackQuery(chatId, callbackQuery, fetch) {
         body: JSON.stringify({
           chat_id: chatId,
           message_id: messageId,
-          text: `Congratulations! Your preferences have been saved: ${userConfig.join(
-            ", "
-          )}.\n\nYou can now start sending me text to process. \n\n
-          Note : Use /config anytime to edit your preferences.`,
+          text: `Congratulations! Your preferences have been saved: .\nYou can now start sending me text to process. \n\nNote : Use /config anytime to edit your preferences.`,
         }),
       }
     )
@@ -226,10 +223,11 @@ async function handleCallbackQuery(chatId, callbackQuery, fetch) {
   switch (data) {
     case "correct":
       prompt =
-        "Just correct the grammar and spelling of the following and return: "
+        "Just correct the grammar and spelling of the following and return without making much changes to the original text: "
       break
     case "concise":
-      prompt = "Make the following text concise and clear: "
+      prompt =
+        "Make the following text concise and clear without making too much changes to the main content: "
       break
     case "shorter":
       prompt =
@@ -273,7 +271,7 @@ async function handleConfigOption(chatId, option, messageId, fetch) {
   await saveUserConfig(chatId, userConfig)
 
   const configText =
-    "Set your prefered commands.\n\n" + "You can select multiple options."
+    "Set your prefered commands.\n" + "You can select multiple options."
 
   const options = [
     "Correct Grammar and spelling",
