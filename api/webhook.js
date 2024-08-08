@@ -6,7 +6,6 @@ const client = createClient({
 })
 
 const conversationHistory = {}
-const customCommandStates = {}
 
 module.exports = async (req, res) => {
   try {
@@ -36,8 +35,6 @@ module.exports = async (req, res) => {
             await sendIntroduction(chatId, fetch)
           } else if (userText === "/config") {
             await startConfiguration(chatId, fetch)
-          } else if (customCommandStates[chatId]) {
-            await handleCustomCommandInput(chatId, userText, fetch)
           } else {
             conversationHistory[chatId].push({
               role: "user",
@@ -152,35 +149,21 @@ async function startConfiguration(chatId, fetch) {
     "Make Longer",
     "Create Variation",
     "Add Emojis",
-    "Add Custom Command",
   ]
 
   const userConfig = await getUserConfig(chatId)
 
   const inlineKeyboard = options.map((option, index) => {
-    if (index < 6) {
-      const callbackData = `config_${
-        ["correct", "concise", "shorter", "longer", "variation", "emojis"][
-          index
-        ]
-      }`
-      const isSelected = userConfig.includes(
-        callbackData.replace("config_", "")
-      )
-      return [
-        {
-          text: `${isSelected ? "✅ " : ""}${option}`,
-          callback_data: callbackData,
-        },
-      ]
-    } else {
-      return [
-        {
-          text: option,
-          callback_data: "add_custom_command",
-        },
-      ]
-    }
+    const callbackData = `config_${
+      ["correct", "concise", "shorter", "longer", "variation", "emojis"][index]
+    }`
+    const isSelected = userConfig.includes(callbackData.replace("config_", ""))
+    return [
+      {
+        text: `${isSelected ? "✅ " : ""}${option}`,
+        callback_data: callbackData,
+      },
+    ]
   })
 
   inlineKeyboard.push([
@@ -207,11 +190,6 @@ async function handleCallbackQuery(chatId, callbackQuery, fetch) {
   const data = callbackQuery.data
   const messageId = callbackQuery.message.message_id
 
-  if (data === "add_custom_command") {
-    await handleAddCustomCommand(chatId, messageId, fetch)
-    return
-  }
-
   if (data.startsWith("config_")) {
     await handleConfigOption(
       chatId,
@@ -234,7 +212,8 @@ async function handleCallbackQuery(chatId, callbackQuery, fetch) {
           message_id: messageId,
           text: `Congratulations! Your preferences have been saved: ${userConfig.join(
             ", "
-          )}.\n\nYou can now start sending me text to process. \n\nNote : Use /config anytime to edit your preferences.`,
+          )}.\n\nYou can now start sending me text to process. \n\n
+          Note : Use /config anytime to edit your preferences.`,
         }),
       }
     )
@@ -293,7 +272,50 @@ async function handleConfigOption(chatId, option, messageId, fetch) {
   }
   await saveUserConfig(chatId, userConfig)
 
-  await startConfiguration(chatId, fetch)
+  const configText =
+    "Set your prefered commands.\n\n" + "You can select multiple options."
+
+  const options = [
+    "Correct Grammar and spelling",
+    "Make concise and Clear",
+    "Make Shorter",
+    "Make Longer",
+    "Create Variation",
+    "Add Emojis",
+  ]
+
+  const inlineKeyboard = options.map((optionText, index) => {
+    const callbackData = `config_${
+      ["correct", "concise", "shorter", "longer", "variation", "emojis"][index]
+    }`
+    const isSelected = userConfig.includes(callbackData.replace("config_", ""))
+    return [
+      {
+        text: `${isSelected ? "✅ " : ""}${optionText}`,
+        callback_data: callbackData,
+      },
+    ]
+  })
+
+  inlineKeyboard.push([
+    { text: "🔵 SAVE PREFERENCES 🔵", callback_data: "save_preferences" },
+  ])
+
+  await fetch(
+    `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/editMessageText`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        message_id: messageId,
+        text: configText,
+        reply_markup: {
+          inline_keyboard: inlineKeyboard,
+        },
+      }),
+    }
+  )
 }
 
 async function sendOptionsKeyboard(chatId, text, fetch, userConfig) {
@@ -368,69 +390,4 @@ async function getGPTResponse(chatId, prompt, fetch) {
   const botResponse = data.choices[0].message.content
   conversationHistory[chatId].push({ role: "assistant", content: botResponse })
   return botResponse
-}
-
-async function handleAddCustomCommand(chatId, messageId, fetch) {
-  customCommandStates[chatId] = true
-  const promptText =
-    "Cool! Now you can add your own custom preferences. Just type in the command you want to add. For example: 'Make the text formatted for WhatsApp'. Make sure to start with 'Make the text...'"
-
-  await fetch(
-    `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/editMessageText`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: chatId,
-        message_id: messageId,
-        text: promptText,
-      }),
-    }
-  )
-}
-
-async function handleCustomCommandInput(chatId, userInput, fetch) {
-  if (!userInput.toLowerCase().startsWith("make the text")) {
-    await fetch(
-      `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          chat_id: chatId,
-          text: "Please enter a valid text formatting command starting with 'Make the text...'. Press /config to restart.",
-        }),
-      }
-    )
-    customCommandStates[chatId] = false
-    return
-  }
-
-  const commandId = userInput
-    .toLowerCase()
-    .replace(/\s+/g, "-")
-    .substring(0, 20)
-  const newCommand = {
-    id: commandId,
-    title: userInput,
-    description: userInput,
-  }
-
-  let userConfig = await getUserConfig(chatId)
-  userConfig.push(newCommand)
-  await saveUserConfig(chatId, userConfig)
-
-  await fetch(
-    `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text: `Your custom preference "${newCommand.title}" has been added. Use /config to select it.`,
-      }),
-    }
-  )
-
-  customCommandStates[chatId] = false
 }
