@@ -143,45 +143,51 @@ async function sendIntroduction(chatId, fetch) {
 
 async function startConfiguration(chatId, fetch) {
   const configText =
-    "Set your prefered commands.\n\n" + "You can select multiple options."
+    "Set your preferred commands.\n\n" + "You can select multiple options."
 
-  const options = [
+  const defaultOptions = [
     "Correct Grammar and spelling",
     "Make concise and Clear",
     "Make Shorter",
     "Make Longer",
     "Create Variation",
     "Add Emojis",
-    "Add Custom Command",
   ]
 
   const userConfig = await getUserConfig(chatId)
 
-  const inlineKeyboard = options.map((option, index) => {
-    if (index < 6) {
-      const callbackData = `config_${
-        ["correct", "concise", "shorter", "longer", "variation", "emojis"][
-          index
-        ]
-      }`
-      const isSelected = userConfig.includes(
-        callbackData.replace("config_", "")
-      )
-      return [
+  const inlineKeyboard = defaultOptions.map((option, index) => {
+    const callbackData = `config_${
+      ["correct", "concise", "shorter", "longer", "variation", "emojis"][index]
+    }`
+    const isSelected = userConfig.some(item =>
+      typeof item === "string"
+        ? item === callbackData.replace("config_", "")
+        : item.id === callbackData.replace("config_", "")
+    )
+    return [
+      {
+        text: `${isSelected ? "✅ " : ""}${option}`,
+        callback_data: callbackData,
+      },
+    ]
+  })
+
+  // Add custom commands to the keyboard
+  userConfig.forEach(command => {
+    if (typeof command === "object" && command.id && command.title) {
+      inlineKeyboard.push([
         {
-          text: `${isSelected ? "✅ " : ""}${option}`,
-          callback_data: callbackData,
+          text: `✅ ${command.title}`,
+          callback_data: `config_${command.id}`,
         },
-      ]
-    } else {
-      return [
-        {
-          text: option,
-          callback_data: "add_custom_command",
-        },
-      ]
+      ])
     }
   })
+
+  inlineKeyboard.push([
+    { text: "Add Custom Command", callback_data: "add_custom_command" },
+  ])
 
   inlineKeyboard.push([
     { text: "🔵 SAVE PREFERENCES 🔵", callback_data: "save_preferences" },
@@ -287,13 +293,32 @@ async function handleCallbackQuery(chatId, callbackQuery, fetch) {
 
 async function handleConfigOption(chatId, option, messageId, fetch) {
   let userConfig = await getUserConfig(chatId)
-  if (userConfig.includes(option)) {
-    userConfig = userConfig.filter(item => item !== option)
-  } else {
-    userConfig.push(option)
-  }
-  await saveUserConfig(chatId, userConfig)
+  const defaultOptions = [
+    "correct",
+    "concise",
+    "shorter",
+    "longer",
+    "variation",
+    "emojis",
+  ]
 
+  if (defaultOptions.includes(option)) {
+    const index = userConfig.findIndex(item =>
+      typeof item === "string" ? item === option : item.id === option
+    )
+    if (index !== -1) {
+      userConfig.splice(index, 1)
+    } else {
+      userConfig.push(option)
+    }
+  } else {
+    const index = userConfig.findIndex(item => item.id === option)
+    if (index !== -1) {
+      userConfig.splice(index, 1)
+    }
+  }
+
+  await saveUserConfig(chatId, userConfig)
   await startConfiguration(chatId, fetch)
 }
 
