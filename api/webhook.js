@@ -1,6 +1,6 @@
-const { Client } = require("@libsql/client")
+const { createClient } = require("@libsql/client")
 
-const client = new Client({
+const client = createClient({
   url: process.env.TURSO_DATABASE_URL,
   authToken: process.env.TURSO_AUTH_TOKEN,
 })
@@ -27,17 +27,22 @@ module.exports = async (req, res) => {
         }
 
         if (message && message.text) {
+          // Handle text
           const userText = message.text
           console.log(`Received message: ${userText} (${chatId})`)
 
+          // Ensure user exists in the database
+          await ensureUser(chatId, message.from)
+
           if (userText === "/start") {
+            // Handle /start command
             await sendIntroduction(chatId, fetch)
-            await configureBot(chatId, fetch)
+            await startConfiguration(chatId, fetch)
           } else if (userText === "/config") {
-            await configureBot(chatId, fetch)
-          } else if (userText === "/help") {
-            await sendHelpMessage(chatId, fetch)
+            // Handle /config command
+            await startConfiguration(chatId, fetch)
           } else {
+            // Save user message in conversation history
             conversationHistory[chatId].push({
               role: "user",
               content: userText,
@@ -47,6 +52,7 @@ module.exports = async (req, res) => {
             await sendOptionsKeyboard(chatId, userText, fetch, userConfig)
           }
         } else if (callbackQuery) {
+          // Handle button clicks
           await handleCallbackQuery(chatId, callbackQuery, fetch)
         }
 
@@ -65,12 +71,60 @@ module.exports = async (req, res) => {
   }
 }
 
+async function ensureUser(chatId, userInfo) {
+  try {
+    const { result } = await client.execute({
+      sql: `INSERT INTO users (chat_id, username, first_name, last_name) 
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(chat_id) DO UPDATE SET
+            username = excluded.username,
+            first_name = excluded.first_name,
+            last_name = excluded.last_name`,
+      args: [
+        chatId,
+        userInfo.username,
+        userInfo.first_name,
+        userInfo.last_name,
+      ],
+    })
+    console.log(`User ensured: ${chatId}`)
+  } catch (error) {
+    console.error(`Error ensuring user: ${error.message}`)
+  }
+}
+
+async function getUserConfig(chatId) {
+  try {
+    const { rows } = await client.execute({
+      sql: "SELECT config FROM user_configs WHERE chat_id = ?",
+      args: [chatId],
+    })
+    return rows.length > 0
+      ? JSON.parse(rows[0].config)
+      : ["correct", "shorter", "longer", "variation", "emojis"]
+  } catch (error) {
+    console.error(`Error getting user config: ${error.message}`)
+    return ["correct", "shorter", "longer", "variation", "emojis"]
+  }
+}
+
+async function saveUserConfig(chatId, config) {
+  try {
+    await client.execute({
+      sql: "INSERT OR REPLACE INTO user_configs (chat_id, config) VALUES (?, ?)",
+      args: [chatId, JSON.stringify(config)],
+    })
+  } catch (error) {
+    console.error(`Error saving user config: ${error.message}`)
+  }
+}
+
 async function sendIntroduction(chatId, fetch) {
   const introText =
     "Welcome to Prettier Bot! 👋\n\n" +
     "This bot is here to help you simplify your writings. " +
     "Just copy-paste or type your text here, and I'll help you work on it before you send it to somebody else.\n\n" +
-    "Let's start by configuring your bot preferences."
+    "Let's start by configuring your preferences."
 
   await fetch(
     `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
@@ -85,7 +139,7 @@ async function sendIntroduction(chatId, fetch) {
   )
 }
 
-async function configureBot(chatId, fetch) {
+async function startConfiguration(chatId, fetch) {
   const configText =
     "Configure your commands. Select the options you'd like to use:\n\n" +
     "Selecting a single option will keep it as the default option."
@@ -96,9 +150,6 @@ async function configureBot(chatId, fetch) {
     { text: "Make Longer", callback_data: "config_longer" },
     { text: "Create Variation", callback_data: "config_variation" },
     { text: "Add Emojis", callback_data: "config_emojis" },
-    { text: "Format for WhatsApp", callback_data: "config_whatsapp" },
-    { text: "Format for X", callback_data: "config_x" },
-    { text: "Format for Telegram", callback_data: "config_telegram" },
     { text: "Finish Configuration", callback_data: "config_finish" },
   ]
 
@@ -115,27 +166,6 @@ async function configureBot(chatId, fetch) {
         reply_markup: {
           inline_keyboard: inlineKeyboard,
         },
-      }),
-    }
-  )
-}
-
-async function sendHelpMessage(chatId, fetch) {
-  const helpText =
-    "Here are the available commands:\n\n" +
-    "/start - Start the bot and configure your preferences\n" +
-    "/config - Reconfigure your bot preferences\n" +
-    "/help - Show this help message\n\n" +
-    "To use the bot, simply send your text and choose an option from the provided buttons."
-
-  await fetch(
-    `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text: helpText,
       }),
     }
   )
@@ -169,7 +199,7 @@ async function handleCallbackQuery(chatId, callbackQuery, fetch) {
   const originalText = callbackQuery.message.text
 
   if (data.startsWith("config_")) {
-    await handleConfigCallback(chatId, data, fetch)
+    await handleConfigCallback(chatId, data, fetch, messageId)
     return
   }
 
@@ -193,23 +223,14 @@ async function handleCallbackQuery(chatId, callbackQuery, fetch) {
     case "emojis":
       prompt = "Add appropriate emojis to the following text: "
       break
-    case "whatsapp":
-      prompt =
-        "Format the following text for WhatsApp (add appropriate line breaks, emojis, etc.): "
-      break
-    case "x":
-      prompt =
-        "Format the following text for X (Twitter) (consider character limit, hashtags, etc.): "
-      break
-    case "telegram":
-      prompt =
-        "Format the following text for Telegram (consider formatting options like bold, italic, etc.): "
-      break
   }
 
   const gptResponse = await getGPTResponse(chatId, prompt + originalText, fetch)
+
+  // Edit the original message instead of sending a new one
   await editMessage(chatId, messageId, gptResponse, fetch)
 
+  // Acknowledge the callback query to remove the loading indicator
   await fetch(
     `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`,
     {
@@ -222,9 +243,10 @@ async function handleCallbackQuery(chatId, callbackQuery, fetch) {
   )
 }
 
-async function handleConfigCallback(chatId, data, fetch) {
+async function handleConfigCallback(chatId, data, fetch, messageId) {
   if (data === "config_finish") {
-    await saveUserConfig(chatId)
+    const userConfig = await getUserConfig(chatId)
+    await saveUserConfig(chatId, userConfig)
     await fetch(
       `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
       {
@@ -238,51 +260,45 @@ async function handleConfigCallback(chatId, data, fetch) {
     )
   } else {
     const option = data.replace("config_", "")
-    await toggleUserConfig(chatId, option)
+    let userConfig = await getUserConfig(chatId)
+    if (userConfig.includes(option)) {
+      userConfig = userConfig.filter(item => item !== option)
+    } else {
+      userConfig.push(option)
+    }
+    await saveUserConfig(chatId, userConfig)
+
+    // Update the configuration message
+    const configText =
+      "Current configuration:\n" +
+      userConfig.join(", ") +
+      "\n\nSelect more options or finish configuration."
+    const options = [
+      { text: "Correct Grammar", callback_data: "config_correct" },
+      { text: "Make Shorter", callback_data: "config_shorter" },
+      { text: "Make Longer", callback_data: "config_longer" },
+      { text: "Create Variation", callback_data: "config_variation" },
+      { text: "Add Emojis", callback_data: "config_emojis" },
+      { text: "Finish Configuration", callback_data: "config_finish" },
+    ]
+    const inlineKeyboard = options.map(option => [option])
+
+    await fetch(
+      `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/editMessageText`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: chatId,
+          message_id: messageId,
+          text: configText,
+          reply_markup: {
+            inline_keyboard: inlineKeyboard,
+          },
+        }),
+      }
+    )
   }
-}
-
-async function getUserConfig(chatId) {
-  const result = await client.execute({
-    sql: "SELECT config FROM user_configs WHERE chat_id = ?",
-    args: [chatId],
-  })
-
-  if (result.rows.length > 0) {
-    return JSON.parse(result.rows[0].config)
-  }
-  return [
-    "correct",
-    "shorter",
-    "longer",
-    "variation",
-    "emojis",
-    "whatsapp",
-    "x",
-    "telegram",
-  ]
-}
-
-async function toggleUserConfig(chatId, option) {
-  let config = await getUserConfig(chatId)
-  const index = config.indexOf(option)
-  if (index > -1) {
-    config.splice(index, 1)
-  } else {
-    config.push(option)
-  }
-  await client.execute({
-    sql: "INSERT OR REPLACE INTO user_configs (chat_id, config) VALUES (?, ?)",
-    args: [chatId, JSON.stringify(config)],
-  })
-}
-
-async function saveUserConfig(chatId) {
-  const config = await getUserConfig(chatId)
-  await client.execute({
-    sql: "INSERT OR REPLACE INTO user_configs (chat_id, config) VALUES (?, ?)",
-    args: [chatId, JSON.stringify(config)],
-  })
 }
 
 async function editMessage(chatId, messageId, text, fetch) {
@@ -317,7 +333,7 @@ async function getGPTResponse(chatId, prompt, fetch) {
       Authorization: `Bearer ${process.env.OPEN_AI_KEY}`,
     },
     body: JSON.stringify({
-      model: "gpt-4-0613",
+      model: "gpt-4o-mini",
       messages: [
         {
           role: "system",
