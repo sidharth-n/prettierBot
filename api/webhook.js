@@ -260,20 +260,6 @@ async function handleCallbackQuery(chatId, callbackQuery, fetch) {
     case "emojis":
       prompt = "Add appropriate emojis to the following text: "
       break
-    case "whatsapp":
-      prompt = "Format the following text for WhatsApp: "
-      break
-    case "x":
-      prompt = "Format the following text for X (Twitter): "
-      break
-    case "instagram":
-      prompt =
-        "Format the following text for Instagram with proper hashtags and emojis: "
-      break
-    case "telegram":
-      prompt =
-        "Format the following text for Telegram with appropriate styling: "
-      break
   }
 
   const gptResponse = await getGPTResponse(chatId, prompt + originalText, fetch)
@@ -312,26 +298,11 @@ async function handleConfigOption(chatId, option, messageId, fetch) {
     "Make Longer",
     "Create Variation",
     "Add Emojis",
-    "Modify for Whatsapp",
-    "Modify for X",
-    "Modify for Instagram",
-    "Modify for Telegram",
   ]
 
   const inlineKeyboard = options.map((optionText, index) => {
     const callbackData = `config_${
-      [
-        "correct",
-        "concise",
-        "shorter",
-        "longer",
-        "variation",
-        "emojis",
-        "whatsapp",
-        "x",
-        "instagram",
-        "telegram",
-      ][index]
+      ["correct", "concise", "shorter", "longer", "variation", "emojis"][index]
     }`
     const isSelected = userConfig.includes(callbackData.replace("config_", ""))
     return [
