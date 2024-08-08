@@ -387,7 +387,7 @@ async function getGPTResponse(chatId, prompt, fetch) {
       Authorization: `Bearer ${process.env.OPEN_AI_KEY}`,
     },
     body: JSON.stringify({
-      model: "gpt-4o-mini",
+      model: "gpt-3.5-turbo",
       messages: [
         {
           role: "system",
@@ -440,7 +440,6 @@ async function handleCustomCommandInput(chatId, userInput, fetch) {
     return
   }
 
-  // Send the user's input to GPT for formatting and validation
   const gptPrompt = `
     Format the following user-provided custom command for a text processing bot:
     "${userInput}"
@@ -457,16 +456,34 @@ async function handleCustomCommandInput(chatId, userInput, fetch) {
     The 'prompt' should be formatted to work well with GPT for text processing.
   `
 
-  const gptResponse = await getGPTResponse(chatId, gptPrompt, fetch)
-
-  let newCommand
   try {
-    newCommand = JSON.parse(gptResponse)
+    const gptResponse = await getGPTResponse(chatId, gptPrompt, fetch)
+    const newCommand = JSON.parse(gptResponse)
+
     if (!newCommand.id || !newCommand.title || !newCommand.prompt) {
       throw new Error("Invalid command structure")
     }
+
+    let userConfig = await getUserConfig(chatId)
+    userConfig.push(newCommand)
+    await saveUserConfig(chatId, userConfig)
+
+    await fetch(
+      `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text: `Your custom preference "${newCommand.title}" has been added. Use /config to select it.`,
+        }),
+      }
+    )
+
+    customCommandStates[chatId] = false
+    await startConfiguration(chatId, fetch)
   } catch (error) {
-    console.error("Error parsing GPT response:", error)
+    console.error("Error processing custom command:", error)
     await fetch(
       `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
       {
@@ -479,24 +496,5 @@ async function handleCustomCommandInput(chatId, userInput, fetch) {
       }
     )
     customCommandStates[chatId] = false
-    return
   }
-
-  let userConfig = await getUserConfig(chatId)
-  userConfig.push(newCommand)
-  await saveUserConfig(chatId, userConfig)
-
-  await fetch(
-    `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text: `Your custom preference "${newCommand.title}" has been added. Use /config to select it.`,
-      }),
-    }
-  )
-
-  customCommandStates[chatId] = false
 }
