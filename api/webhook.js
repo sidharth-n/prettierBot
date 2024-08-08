@@ -358,7 +358,7 @@ async function getGPTResponse(chatId, prompt, fetch) {
       Authorization: `Bearer ${process.env.OPEN_AI_KEY}`,
     },
     body: JSON.stringify({
-      model: "gpt-4-0613",
+      model: "gpt-4o-mini",
       messages: [
         {
           role: "system",
