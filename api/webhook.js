@@ -381,9 +381,8 @@ async function getGPTResponse(chatId, prompt, fetch) {
         {
           role: "system",
           content:
-            "You are Prettier, a Telegram bot designed to help users improve and modify their text.",
+            "You are a helpful assistant that processes and formats text commands.",
         },
-        ...conversationHistory[chatId].slice(-5),
         { role: "user", content: prompt },
       ],
       temperature: 0.7,
@@ -391,9 +390,7 @@ async function getGPTResponse(chatId, prompt, fetch) {
   })
 
   const data = await response.json()
-  const botResponse = data.choices[0].message.content
-  conversationHistory[chatId].push({ role: "assistant", content: botResponse })
-  return botResponse
+  return data.choices[0].message.content
 }
 
 async function handleAddCustomCommand(chatId, messageId, fetch) {
@@ -432,14 +429,46 @@ async function handleCustomCommandInput(chatId, userInput, fetch) {
     return
   }
 
-  const commandId = userInput
-    .toLowerCase()
-    .replace(/\s+/g, "-")
-    .substring(0, 20)
-  const newCommand = {
-    id: commandId,
-    title: userInput,
-    description: userInput,
+  // Send the user's input to GPT for formatting and validation
+  const gptPrompt = `
+    Format the following user-provided custom command for a text processing bot:
+    "${userInput}"
+    
+    Return a JSON object with the following structure:
+    {
+      "id": "a-kebab-case-id",
+      "title": "The formatted title of the command",
+      "prompt": "The prompt to be sent to GPT for text processing"
+    }
+
+    Ensure the 'id' is in kebab-case, derived from the title, and no longer than 20 characters.
+    The 'title' should be a cleaned up, properly capitalized version of the user's input.
+    The 'prompt' should be formatted to work well with GPT for text processing.
+  `
+
+  const gptResponse = await getGPTResponse(chatId, gptPrompt, fetch)
+
+  let newCommand
+  try {
+    newCommand = JSON.parse(gptResponse)
+    if (!newCommand.id || !newCommand.title || !newCommand.prompt) {
+      throw new Error("Invalid command structure")
+    }
+  } catch (error) {
+    console.error("Error parsing GPT response:", error)
+    await fetch(
+      `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text: "Sorry, I couldn't process your custom command. Please try again or use /config to restart.",
+        }),
+      }
+    )
+    customCommandStates[chatId] = false
+    return
   }
 
   let userConfig = await getUserConfig(chatId)
