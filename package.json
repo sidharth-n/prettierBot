@@ -9,6 +9,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@libsql/client": "^0.8.1",
     "node-fetch": "^3.3.2"
   }
 }
