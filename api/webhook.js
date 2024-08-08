@@ -210,7 +210,7 @@ async function handleCallbackQuery(chatId, callbackQuery, fetch) {
         body: JSON.stringify({
           chat_id: chatId,
           message_id: messageId,
-          text: `Congratulations! Your preferences have been saved: .\nYou can now start sending me text to process. \n\nNote : Use /config anytime to edit your preferences.`,
+          text: `Awesome! 🎉 Your preferences have been saved!✅ .\nYou can now start sending me text to process.✍️✨ \n\nNote : Use /config anytime to edit your preferences.⚙️`,
         }),
       }
     )
