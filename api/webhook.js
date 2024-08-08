@@ -14,14 +14,9 @@ module.exports = async (req, res) => {
 
       const message = req.body.message
       const callbackQuery = req.body.callback_query
-      const pollAnswer = req.body.poll_answer
 
-      if (message || callbackQuery || pollAnswer) {
-        const chatId = message
-          ? message.chat.id
-          : callbackQuery
-          ? callbackQuery.message.chat.id
-          : pollAnswer.user.id
+      if (message || callbackQuery) {
+        const chatId = message ? message.chat.id : callbackQuery.message.chat.id
         console.log(`Processing request for chat ID: ${chatId}`)
 
         const fetch = (await import("node-fetch")).default
@@ -38,7 +33,6 @@ module.exports = async (req, res) => {
 
           if (userText === "/start") {
             await sendIntroduction(chatId, fetch)
-            await startConfiguration(chatId, fetch)
           } else if (userText === "/config") {
             await startConfiguration(chatId, fetch)
           } else {
@@ -52,14 +46,12 @@ module.exports = async (req, res) => {
           }
         } else if (callbackQuery) {
           await handleCallbackQuery(chatId, callbackQuery, fetch)
-        } else if (pollAnswer) {
-          await handlePollAnswer(chatId, pollAnswer)
         }
 
         res.status(200).send("OK")
       } else {
-        console.log("No message, callback query, or poll answer found")
-        res.status(200).send("No message, callback query, or poll answer found")
+        console.log("No message or callback query found")
+        res.status(200).send("No message or callback query found")
       }
     } else {
       console.log(`Received ${req.method} request`)
@@ -122,7 +114,7 @@ async function sendIntroduction(chatId, fetch) {
     "Welcome to Prettier Bot! 👋\n\n" +
     "This bot is here to help you simplify your writings. " +
     "Just copy-paste or type your text here, and I'll help you work on it before you send it to somebody else.\n\n" +
-    "Let's start by configuring your preferences."
+    "Use /config to set up your preferences."
 
   await fetch(
     `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
@@ -140,7 +132,7 @@ async function sendIntroduction(chatId, fetch) {
 async function startConfiguration(chatId, fetch) {
   const configText =
     "Configure your commands. Select the options you'd like to use:\n\n" +
-    "You can select multiple options. Your current selection will be shown."
+    "You can select multiple options."
 
   const options = [
     "Correct Grammar",
@@ -152,29 +144,23 @@ async function startConfiguration(chatId, fetch) {
 
   const userConfig = await getUserConfig(chatId)
 
-  const { result } = await fetch(
-    `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendPoll`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: chatId,
-        question: configText,
-        options: options,
-        is_anonymous: false,
-        allows_multiple_answers: true,
-        type: "regular",
-      }),
-    }
-  ).then(res => res.json())
-
-  // Store the poll id for later use
-  await client.execute({
-    sql: "INSERT OR REPLACE INTO active_polls (chat_id, poll_id) VALUES (?, ?)",
-    args: [chatId, result.poll.id],
+  const inlineKeyboard = options.map((option, index) => {
+    const callbackData = `config_${
+      ["correct", "shorter", "longer", "variation", "emojis"][index]
+    }`
+    const isSelected = userConfig.includes(callbackData.replace("config_", ""))
+    return [
+      {
+        text: `${isSelected ? "✅ " : ""}${option}`,
+        callback_data: callbackData,
+      },
+    ]
   })
 
-  // Send "Finish Configuration" button
+  inlineKeyboard.push([
+    { text: "Finish Configuration", callback_data: "finish_config" },
+  ])
+
   await fetch(
     `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
     {
@@ -182,38 +168,28 @@ async function startConfiguration(chatId, fetch) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         chat_id: chatId,
-        text: "When you're done selecting options, click the button below:",
+        text: configText,
         reply_markup: {
-          inline_keyboard: [
-            [{ text: "Finish Configuration", callback_data: "finish_config" }],
-          ],
+          inline_keyboard: inlineKeyboard,
         },
       }),
     }
   )
 }
 
-async function handlePollAnswer(chatId, pollAnswer) {
-  const selectedOptions = pollAnswer.option_ids.map(id => {
-    switch (id) {
-      case 0:
-        return "correct"
-      case 1:
-        return "shorter"
-      case 2:
-        return "longer"
-      case 3:
-        return "variation"
-      case 4:
-        return "emojis"
-    }
-  })
-
-  await saveUserConfig(chatId, selectedOptions)
-}
-
 async function handleCallbackQuery(chatId, callbackQuery, fetch) {
   const data = callbackQuery.data
+  const messageId = callbackQuery.message.message_id
+
+  if (data.startsWith("config_")) {
+    await handleConfigOption(
+      chatId,
+      data.replace("config_", ""),
+      messageId,
+      fetch
+    )
+    return
+  }
 
   if (data === "finish_config") {
     const userConfig = await getUserConfig(chatId)
@@ -233,7 +209,6 @@ async function handleCallbackQuery(chatId, callbackQuery, fetch) {
     return
   }
 
-  const messageId = callbackQuery.message.message_id
   const originalText = callbackQuery.message.text
 
   let prompt = ""
@@ -269,6 +244,61 @@ async function handleCallbackQuery(chatId, callbackQuery, fetch) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         callback_query_id: callbackQuery.id,
+      }),
+    }
+  )
+}
+
+async function handleConfigOption(chatId, option, messageId, fetch) {
+  let userConfig = await getUserConfig(chatId)
+  if (userConfig.includes(option)) {
+    userConfig = userConfig.filter(item => item !== option)
+  } else {
+    userConfig.push(option)
+  }
+  await saveUserConfig(chatId, userConfig)
+
+  const configText =
+    "Configure your commands. Select the options you'd like to use:\n\n" +
+    "You can select multiple options."
+
+  const options = [
+    "Correct Grammar",
+    "Make Shorter",
+    "Make Longer",
+    "Create Variation",
+    "Add Emojis",
+  ]
+
+  const inlineKeyboard = options.map((optionText, index) => {
+    const callbackData = `config_${
+      ["correct", "shorter", "longer", "variation", "emojis"][index]
+    }`
+    const isSelected = userConfig.includes(callbackData.replace("config_", ""))
+    return [
+      {
+        text: `${isSelected ? "✅ " : ""}${optionText}`,
+        callback_data: callbackData,
+      },
+    ]
+  })
+
+  inlineKeyboard.push([
+    { text: "Finish Configuration", callback_data: "finish_config" },
+  ])
+
+  await fetch(
+    `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/editMessageText`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        message_id: messageId,
+        text: configText,
+        reply_markup: {
+          inline_keyboard: inlineKeyboard,
+        },
       }),
     }
   )
@@ -328,7 +358,7 @@ async function getGPTResponse(chatId, prompt, fetch) {
       Authorization: `Bearer ${process.env.OPEN_AI_KEY}`,
     },
     body: JSON.stringify({
-      model: "gpt-4o-mini",
+      model: "gpt-4-0613",
       messages: [
         {
           role: "system",
