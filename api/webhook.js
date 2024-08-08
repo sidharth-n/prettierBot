@@ -90,7 +90,14 @@ async function ensureUser(chatId, userInfo) {
       args: [chatId],
     })
     if (rows.length === 0) {
-      await saveUserConfig(chatId, ["correct"])
+      await saveUserConfig(chatId, [
+        {
+          id: "correct",
+          title: "Correct Grammar and spelling",
+          prompt:
+            "Just correct the grammar and spelling of the following and return: ",
+        },
+      ])
     }
   } catch (error) {
     console.error(`Error ensuring user: ${error.message}`)
@@ -103,10 +110,26 @@ async function getUserConfig(chatId) {
       sql: "SELECT config FROM user_configs WHERE chat_id = ?",
       args: [chatId],
     })
-    return rows.length > 0 ? JSON.parse(rows[0].config) : ["correct"]
+    return rows.length > 0
+      ? JSON.parse(rows[0].config)
+      : [
+          {
+            id: "correct",
+            title: "Correct Grammar and spelling",
+            prompt:
+              "Just correct the grammar and spelling of the following and return: ",
+          },
+        ]
   } catch (error) {
     console.error(`Error getting user config: ${error.message}`)
-    return ["correct"]
+    return [
+      {
+        id: "correct",
+        title: "Correct Grammar and spelling",
+        prompt:
+          "Just correct the grammar and spelling of the following and return: ",
+      },
+    ]
   }
 }
 
@@ -146,44 +169,29 @@ async function startConfiguration(chatId, fetch) {
     "Set your preferred commands.\n\n" + "You can select multiple options."
 
   const defaultOptions = [
-    "Correct Grammar and spelling",
-    "Make concise and Clear",
-    "Make Shorter",
-    "Make Longer",
-    "Create Variation",
-    "Add Emojis",
+    { id: "correct", title: "Correct Grammar and spelling" },
+    { id: "concise", title: "Make concise and Clear" },
+    { id: "shorter", title: "Make Shorter" },
+    { id: "longer", title: "Make Longer" },
+    { id: "variation", title: "Create Variation" },
+    { id: "emojis", title: "Add Emojis" },
   ]
 
   const userConfig = await getUserConfig(chatId)
 
-  const inlineKeyboard = defaultOptions.map((option, index) => {
-    const callbackData = `config_${
-      ["correct", "concise", "shorter", "longer", "variation", "emojis"][index]
-    }`
-    const isSelected = userConfig.some(item =>
-      typeof item === "string"
-        ? item === callbackData.replace("config_", "")
-        : item.id === callbackData.replace("config_", "")
+  const inlineKeyboard = defaultOptions
+    .concat(
+      userConfig.filter(cmd => !defaultOptions.some(opt => opt.id === cmd.id))
     )
-    return [
-      {
-        text: `${isSelected ? "✅ " : ""}${option}`,
-        callback_data: callbackData,
-      },
-    ]
-  })
-
-  // Add custom commands to the keyboard
-  userConfig.forEach(command => {
-    if (typeof command === "object" && command.id && command.title) {
-      inlineKeyboard.push([
+    .map(option => {
+      const isSelected = userConfig.some(item => item.id === option.id)
+      return [
         {
-          text: `✅ ${command.title}`,
-          callback_data: `config_${command.id}`,
+          text: `${isSelected ? "✅ " : ""}${option.title}`,
+          callback_data: `config_${option.id}`,
         },
-      ])
-    }
-  })
+      ]
+    })
 
   inlineKeyboard.push([
     { text: "Add Custom Command", callback_data: "add_custom_command" },
@@ -230,6 +238,7 @@ async function handleCallbackQuery(chatId, callbackQuery, fetch) {
 
   if (data === "save_preferences") {
     const userConfig = await getUserConfig(chatId)
+    const configText = userConfig.map(item => item.title).join(", ")
     await fetch(
       `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/editMessageText`,
       {
@@ -238,9 +247,7 @@ async function handleCallbackQuery(chatId, callbackQuery, fetch) {
         body: JSON.stringify({
           chat_id: chatId,
           message_id: messageId,
-          text: `Congratulations! Your preferences have been saved: ${userConfig.join(
-            ", "
-          )}.\n\nYou can now start sending me text to process. \n\n
+          text: `Congratulations! Your preferences have been saved: ${configText}.\n\nYou can now start sending me text to process. \n\n
           Note : Use /config anytime to edit your preferences.`,
         }),
       }
@@ -249,35 +256,17 @@ async function handleCallbackQuery(chatId, callbackQuery, fetch) {
   }
 
   const originalText = callbackQuery.message.text
+  const userConfig = await getUserConfig(chatId)
+  const selectedCommand = userConfig.find(item => item.id === data)
 
-  let prompt = ""
-  switch (data) {
-    case "correct":
-      prompt =
-        "Just correct the grammar and spelling of the following and return: "
-      break
-    case "concise":
-      prompt = "Make the following text concise and clear: "
-      break
-    case "shorter":
-      prompt =
-        "Make the following text shorter by 20% without changing its main meaning: "
-      break
-    case "longer":
-      prompt =
-        "Make the following text longer by 20% without changing its main meaning: "
-      break
-    case "variation":
-      prompt = "Create a variation of the following text with similar length: "
-      break
-    case "emojis":
-      prompt = "Add appropriate emojis to the following text: "
-      break
+  if (selectedCommand) {
+    const gptResponse = await getGPTResponse(
+      chatId,
+      selectedCommand.prompt + originalText,
+      fetch
+    )
+    await editMessage(chatId, messageId, gptResponse, fetch)
   }
-
-  const gptResponse = await getGPTResponse(chatId, prompt + originalText, fetch)
-
-  await editMessage(chatId, messageId, gptResponse, fetch)
 
   await fetch(
     `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`,
@@ -293,39 +282,62 @@ async function handleCallbackQuery(chatId, callbackQuery, fetch) {
 
 async function handleConfigOption(chatId, option, messageId, fetch) {
   let userConfig = await getUserConfig(chatId)
-  const defaultOptions = [
-    "correct",
-    "concise",
-    "shorter",
-    "longer",
-    "variation",
-    "emojis",
-  ]
-
-  if (defaultOptions.includes(option)) {
-    const index = userConfig.findIndex(item =>
-      typeof item === "string" ? item === option : item.id === option
-    )
-    if (index !== -1) {
-      userConfig.splice(index, 1)
-    } else {
-      userConfig.push(option)
-    }
+  const index = userConfig.findIndex(item => item.id === option)
+  if (index !== -1) {
+    userConfig.splice(index, 1)
   } else {
-    const index = userConfig.findIndex(item => item.id === option)
-    if (index !== -1) {
-      userConfig.splice(index, 1)
+    const defaultOptions = {
+      correct: {
+        id: "correct",
+        title: "Correct Grammar and spelling",
+        prompt:
+          "Just correct the grammar and spelling of the following and return: ",
+      },
+      concise: {
+        id: "concise",
+        title: "Make concise and Clear",
+        prompt: "Make the following text concise and clear: ",
+      },
+      shorter: {
+        id: "shorter",
+        title: "Make Shorter",
+        prompt:
+          "Make the following text shorter by 20% without changing its main meaning: ",
+      },
+      longer: {
+        id: "longer",
+        title: "Make Longer",
+        prompt:
+          "Make the following text longer by 20% without changing its main meaning: ",
+      },
+      variation: {
+        id: "variation",
+        title: "Create Variation",
+        prompt:
+          "Create a variation of the following text with similar length: ",
+      },
+      emojis: {
+        id: "emojis",
+        title: "Add Emojis",
+        prompt: "Add appropriate emojis to the following text: ",
+      },
+    }
+    if (defaultOptions[option]) {
+      userConfig.push(defaultOptions[option])
+    } else {
+      const customOption = userConfig.find(item => item.id === option)
+      if (customOption) {
+        userConfig.push(customOption)
+      }
     }
   }
-
   await saveUserConfig(chatId, userConfig)
   await startConfiguration(chatId, fetch)
 }
 
 async function sendOptionsKeyboard(chatId, text, fetch, userConfig) {
   const options = userConfig.map(option => {
-    const optionText = option.charAt(0).toUpperCase() + option.slice(1)
-    return [{ text: optionText, callback_data: option }]
+    return [{ text: option.title, callback_data: option.id }]
   })
 
   await fetch(
@@ -347,8 +359,7 @@ async function sendOptionsKeyboard(chatId, text, fetch, userConfig) {
 async function editMessage(chatId, messageId, text, fetch) {
   const userConfig = await getUserConfig(chatId)
   const options = userConfig.map(option => {
-    const optionText = option.charAt(0).toUpperCase() + option.slice(1)
-    return [{ text: optionText, callback_data: option }]
+    return [{ text: option.title, callback_data: option.id }]
   })
 
   await fetch(
