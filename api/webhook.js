@@ -234,8 +234,7 @@ async function handleCallbackQuery(chatId, callbackQuery, fetch) {
           message_id: messageId,
           text: `Congratulations! Your preferences have been saved: ${userConfig.join(
             ", "
-          )}.\n\nYou can now start sending me text to process. \n\n
-          Note : Use /config anytime to edit your preferences.`,
+          )}.\n\nYou can now start sending me text to process. \n\nNote : Use /config anytime to edit your preferences.`,
         }),
       }
     )
