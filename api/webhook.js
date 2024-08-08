@@ -8,7 +8,59 @@ const client = createClient({
 const conversationHistory = {}
 
 module.exports = async (req, res) => {
-  // ... (rest of the main function remains unchanged)
+  try {
+    if (req.method === "POST") {
+      console.log("Received POST request:", JSON.stringify(req.body))
+
+      const message = req.body.message
+      const callbackQuery = req.body.callback_query
+
+      if (message || callbackQuery) {
+        const chatId = message ? message.chat.id : callbackQuery.message.chat.id
+        console.log(`Processing request for chat ID: ${chatId}`)
+
+        const fetch = (await import("node-fetch")).default
+
+        if (!conversationHistory[chatId]) {
+          conversationHistory[chatId] = []
+        }
+
+        if (message && message.text) {
+          const userText = message.text
+          console.log(`Received message: ${userText} (${chatId})`)
+
+          await ensureUser(chatId, message.from)
+
+          if (userText === "/start") {
+            await sendIntroduction(chatId, fetch)
+          } else if (userText === "/config") {
+            await startConfiguration(chatId, fetch)
+          } else {
+            conversationHistory[chatId].push({
+              role: "user",
+              content: userText,
+            })
+
+            const userConfig = await getUserConfig(chatId)
+            await sendOptionsKeyboard(chatId, userText, fetch, userConfig)
+          }
+        } else if (callbackQuery) {
+          await handleCallbackQuery(chatId, callbackQuery, fetch)
+        }
+
+        res.status(200).send("OK")
+      } else {
+        console.log("No message or callback query found")
+        res.status(200).send("No message or callback query found")
+      }
+    } else {
+      console.log(`Received ${req.method} request`)
+      res.status(200).send("Hello World")
+    }
+  } catch (error) {
+    console.error("Unhandled error:", error)
+    res.status(500).send("Internal Server Error")
+  }
 }
 
 async function ensureUser(chatId, userInfo) {
@@ -183,7 +235,61 @@ async function handleCallbackQuery(chatId, callbackQuery, fetch) {
     return
   }
 
-  // ... (rest of the function for handling other callback queries remains unchanged)
+  const originalText = callbackQuery.message.text
+
+  let prompt = ""
+  switch (data) {
+    case "correct":
+      prompt =
+        "Just correct the grammar and spelling of the following and return: "
+      break
+    case "concise":
+      prompt = "Make the following text concise and clear: "
+      break
+    case "shorter":
+      prompt =
+        "Make the following text shorter by 20% without changing its main meaning: "
+      break
+    case "longer":
+      prompt =
+        "Make the following text longer by 20% without changing its main meaning: "
+      break
+    case "variation":
+      prompt = "Create a variation of the following text with similar length: "
+      break
+    case "emojis":
+      prompt = "Add appropriate emojis to the following text: "
+      break
+    case "whatsapp":
+      prompt = "Format the following text for WhatsApp: "
+      break
+    case "x":
+      prompt = "Format the following text for X (Twitter): "
+      break
+    case "instagram":
+      prompt =
+        "Format the following text for Instagram with proper hashtags and emojis: "
+      break
+    case "telegram":
+      prompt =
+        "Format the following text for Telegram with appropriate styling: "
+      break
+  }
+
+  const gptResponse = await getGPTResponse(chatId, prompt + originalText, fetch)
+
+  await editMessage(chatId, messageId, gptResponse, fetch)
+
+  await fetch(
+    `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        callback_query_id: callbackQuery.id,
+      }),
+    }
+  )
 }
 
 async function handleConfigOption(chatId, option, messageId, fetch) {
@@ -251,6 +357,52 @@ async function handleConfigOption(chatId, option, messageId, fetch) {
         text: configText,
         reply_markup: {
           inline_keyboard: inlineKeyboard,
+        },
+      }),
+    }
+  )
+}
+
+async function sendOptionsKeyboard(chatId, text, fetch, userConfig) {
+  const options = userConfig.map(option => {
+    const optionText = option.charAt(0).toUpperCase() + option.slice(1)
+    return [{ text: optionText, callback_data: option }]
+  })
+
+  await fetch(
+    `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: text,
+        reply_markup: {
+          inline_keyboard: options,
+        },
+      }),
+    }
+  )
+}
+
+async function editMessage(chatId, messageId, text, fetch) {
+  const userConfig = await getUserConfig(chatId)
+  const options = userConfig.map(option => {
+    const optionText = option.charAt(0).toUpperCase() + option.slice(1)
+    return [{ text: optionText, callback_data: option }]
+  })
+
+  await fetch(
+    `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/editMessageText`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        message_id: messageId,
+        text: text,
+        reply_markup: {
+          inline_keyboard: options,
         },
       }),
     }
