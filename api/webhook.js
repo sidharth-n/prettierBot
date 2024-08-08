@@ -140,8 +140,7 @@ async function sendIntroduction(chatId, fetch) {
 
 async function startConfiguration(chatId, fetch) {
   const configText =
-    "Configure your commands. Select the options you'd like to use:\n\n" +
-    "You can select multiple options. If you select only one option, it will be used as the default command."
+    "Set your prefered commands.\n\n" + "You can select multiple options."
 
   const options = [
     "Correct Grammar and spelling",
@@ -150,28 +149,13 @@ async function startConfiguration(chatId, fetch) {
     "Make Longer",
     "Create Variation",
     "Add Emojis",
-    "Modify for Whatsapp",
-    "Modify for X",
-    "Modify for Instagram",
-    "Modify for Telegram",
   ]
 
   const userConfig = await getUserConfig(chatId)
 
   const inlineKeyboard = options.map((option, index) => {
     const callbackData = `config_${
-      [
-        "correct",
-        "concise",
-        "shorter",
-        "longer",
-        "variation",
-        "emojis",
-        "whatsapp",
-        "x",
-        "instagram",
-        "telegram",
-      ][index]
+      ["correct", "concise", "shorter", "longer", "variation", "emojis"][index]
     }`
     const isSelected = userConfig.includes(callbackData.replace("config_", ""))
     return [
@@ -228,7 +212,8 @@ async function handleCallbackQuery(chatId, callbackQuery, fetch) {
           message_id: messageId,
           text: `Congratulations! Your preferences have been saved: ${userConfig.join(
             ", "
-          )}.\n\nYou can now start sending me text to process. Use /config anytime to edit your preferences.`,
+          )}.\n\nYou can now start sending me text to process. \n\n
+          Note : Use /config anytime to edit your preferences.`,
         }),
       }
     )
@@ -288,8 +273,7 @@ async function handleConfigOption(chatId, option, messageId, fetch) {
   await saveUserConfig(chatId, userConfig)
 
   const configText =
-    "Configure your commands. Select the options you'd like to use:\n\n" +
-    "You can select multiple options. If you select only one option, it will be used as the default command."
+    "Set your prefered commands.\n\n" + "You can select multiple options."
 
   const options = [
     "Correct Grammar and spelling",
