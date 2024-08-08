@@ -543,10 +543,68 @@ async function handleApiError(chatId, fetch, errorMessage) {
   )
 }
 
-// Export the main function
 module.exports = async (req, res) => {
   try {
-    // ... (the rest of the main function remains unchanged)
+    if (req.method === "POST") {
+      console.log("Received POST request:", JSON.stringify(req.body))
+
+      const message = req.body.message
+      const callbackQuery = req.body.callback_query
+
+      if (message || callbackQuery) {
+        const chatId = message ? message.chat.id : callbackQuery.message.chat.id
+        console.log(`Processing request for chat ID: ${chatId}`)
+
+        const fetch = (await import("node-fetch")).default
+
+        if (!conversationHistory[chatId]) {
+          conversationHistory[chatId] = []
+        }
+
+        if (message && message.text) {
+          const userText = message.text
+          console.log(`Received message: ${userText} (${chatId})`)
+
+          try {
+            await ensureUser(chatId, message.from)
+
+            if (userText === "/start") {
+              await sendIntroduction(chatId, fetch)
+            } else if (userText === "/config") {
+              await startConfiguration(chatId, fetch)
+            } else {
+              // ... rest of the message handling logic
+            }
+          } catch (error) {
+            console.error(`Error processing message: ${error.message}`)
+            await handleApiError(
+              chatId,
+              fetch,
+              "An error occurred while processing your message. Please try again."
+            )
+          }
+        } else if (callbackQuery) {
+          try {
+            await handleCallbackQuery(chatId, callbackQuery, fetch)
+          } catch (error) {
+            console.error(`Error handling callback query: ${error.message}`)
+            await handleApiError(
+              chatId,
+              fetch,
+              "An error occurred while processing your request. Please try again."
+            )
+          }
+        }
+
+        res.status(200).send("OK")
+      } else {
+        console.log("No message or callback query found")
+        res.status(200).send("No message or callback query found")
+      }
+    } else {
+      console.log(`Received ${req.method} request`)
+      res.status(200).send("Hello World")
+    }
   } catch (error) {
     console.error("Unhandled error:", error)
     res.status(500).send("Internal Server Error")
