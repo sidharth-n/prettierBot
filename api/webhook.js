@@ -35,6 +35,14 @@ module.exports = async (req, res) => {
             await sendIntroduction(chatId, fetch)
           } else if (userText === "/config") {
             await startConfiguration(chatId, fetch)
+          } else if (
+            conversationHistory[chatId].length > 0 &&
+            conversationHistory[chatId][conversationHistory[chatId].length - 1]
+              .role === "system" &&
+            conversationHistory[chatId][conversationHistory[chatId].length - 1]
+              .content === "Waiting for custom command"
+          ) {
+            await processCustomCommand(chatId, userText, fetch)
           } else {
             conversationHistory[chatId].push({
               role: "user",
@@ -87,7 +95,12 @@ async function ensureUser(chatId, userInfo) {
       args: [chatId],
     })
     if (rows.length === 0) {
-      await saveUserConfig(chatId, ["correct"])
+      await saveUserConfig(chatId, [
+        {
+          name: "correct",
+          prompt: "Correct grammar and spelling for the following text: ",
+        },
+      ])
     }
   } catch (error) {
     console.error(`Error ensuring user: ${error.message}`)
@@ -100,10 +113,22 @@ async function getUserConfig(chatId) {
       sql: "SELECT config FROM user_configs WHERE chat_id = ?",
       args: [chatId],
     })
-    return rows.length > 0 ? JSON.parse(rows[0].config) : ["correct"]
+    return rows.length > 0
+      ? JSON.parse(rows[0].config)
+      : [
+          {
+            name: "correct",
+            prompt: "Correct grammar and spelling for the following text: ",
+          },
+        ]
   } catch (error) {
     console.error(`Error getting user config: ${error.message}`)
-    return ["correct"]
+    return [
+      {
+        name: "correct",
+        prompt: "Correct grammar and spelling for the following text: ",
+      },
+    ]
   }
 }
 
@@ -150,30 +175,17 @@ async function startConfiguration(chatId, fetch) {
     "Make Longer",
     "Create Variation",
     "Add Emojis",
-    "Modify for Whatsapp",
-    "Modify for X",
-    "Modify for Instagram",
-    "Modify for Telegram",
   ]
 
   const userConfig = await getUserConfig(chatId)
 
   const inlineKeyboard = options.map((option, index) => {
     const callbackData = `config_${
-      [
-        "correct",
-        "concise",
-        "shorter",
-        "longer",
-        "variation",
-        "emojis",
-        "whatsapp",
-        "x",
-        "instagram",
-        "telegram",
-      ][index]
+      ["correct", "concise", "shorter", "longer", "variation", "emojis"][index]
     }`
-    const isSelected = userConfig.includes(callbackData.replace("config_", ""))
+    const isSelected = userConfig.some(
+      config => config.name === callbackData.replace("config_", "")
+    )
     return [
       {
         text: `${isSelected ? "✅ " : ""}${option}`,
@@ -182,6 +194,9 @@ async function startConfiguration(chatId, fetch) {
     ]
   })
 
+  inlineKeyboard.push([
+    { text: "Add Custom Command", callback_data: "custom_command" },
+  ])
   inlineKeyboard.push([
     { text: "🔵 SAVE PREFERENCES 🔵", callback_data: "save_preferences" },
   ])
@@ -216,6 +231,11 @@ async function handleCallbackQuery(chatId, callbackQuery, fetch) {
     return
   }
 
+  if (data === "custom_command") {
+    await requestCustomCommand(chatId, fetch)
+    return
+  }
+
   if (data === "save_preferences") {
     const userConfig = await getUserConfig(chatId)
     await fetch(
@@ -226,9 +246,11 @@ async function handleCallbackQuery(chatId, callbackQuery, fetch) {
         body: JSON.stringify({
           chat_id: chatId,
           message_id: messageId,
-          text: `Congratulations! Your preferences have been saved: ${userConfig.join(
-            ", "
-          )}.\n\nYou can now start sending me text to process. Use /config anytime to edit your preferences.`,
+          text: `Congratulations! Your preferences have been saved: ${userConfig
+            .map(config => config.name)
+            .join(
+              ", "
+            )}.\n\nYou can now start sending me text to process. Use /config anytime to edit your preferences.`,
         }),
       }
     )
@@ -236,49 +258,17 @@ async function handleCallbackQuery(chatId, callbackQuery, fetch) {
   }
 
   const originalText = callbackQuery.message.text
+  const userConfig = await getUserConfig(chatId)
+  const selectedConfig = userConfig.find(config => config.name === data)
 
-  let prompt = ""
-  switch (data) {
-    case "correct":
-      prompt =
-        "Just correct the grammar and spelling of the following and return: "
-      break
-    case "concise":
-      prompt = "Make the following text concise and clear: "
-      break
-    case "shorter":
-      prompt =
-        "Make the following text shorter by 20% without changing its main meaning: "
-      break
-    case "longer":
-      prompt =
-        "Make the following text longer by 20% without changing its main meaning: "
-      break
-    case "variation":
-      prompt = "Create a variation of the following text with similar length: "
-      break
-    case "emojis":
-      prompt = "Add appropriate emojis to the following text: "
-      break
-    case "whatsapp":
-      prompt = "Format the following text for WhatsApp: "
-      break
-    case "x":
-      prompt = "Format the following text for X (Twitter): "
-      break
-    case "instagram":
-      prompt =
-        "Format the following text for Instagram with proper hashtags and emojis: "
-      break
-    case "telegram":
-      prompt =
-        "Format the following text for Telegram with appropriate styling: "
-      break
+  if (selectedConfig) {
+    const gptResponse = await getGPTResponse(
+      chatId,
+      selectedConfig.prompt + originalText,
+      fetch
+    )
+    await editMessage(chatId, messageId, gptResponse, fetch)
   }
-
-  const gptResponse = await getGPTResponse(chatId, prompt + originalText, fetch)
-
-  await editMessage(chatId, messageId, gptResponse, fetch)
 
   await fetch(
     `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`,
@@ -294,13 +284,38 @@ async function handleCallbackQuery(chatId, callbackQuery, fetch) {
 
 async function handleConfigOption(chatId, option, messageId, fetch) {
   let userConfig = await getUserConfig(chatId)
-  if (userConfig.includes(option)) {
-    userConfig = userConfig.filter(item => item !== option)
+  const index = userConfig.findIndex(config => config.name === option)
+  if (index !== -1) {
+    userConfig.splice(index, 1)
   } else {
-    userConfig.push(option)
+    const prompt = getDefaultPrompt(option)
+    userConfig.push({ name: option, prompt })
   }
   await saveUserConfig(chatId, userConfig)
 
+  await updateConfigMessage(chatId, messageId, fetch)
+}
+
+function getDefaultPrompt(option) {
+  switch (option) {
+    case "correct":
+      return "Correct grammar and spelling for the following text: "
+    case "concise":
+      return "Make the following text concise and clear: "
+    case "shorter":
+      return "Make the following text shorter by 20% without changing its main meaning: "
+    case "longer":
+      return "Make the following text longer by 20% without changing its main meaning: "
+    case "variation":
+      return "Create a variation of the following text with similar length: "
+    case "emojis":
+      return "Add appropriate emojis to the following text: "
+    default:
+      return "Process the following text: "
+  }
+}
+
+async function updateConfigMessage(chatId, messageId, fetch) {
   const configText =
     "Configure your commands. Select the options you'd like to use:\n\n" +
     "You can select multiple options. If you select only one option, it will be used as the default command."
@@ -312,28 +327,17 @@ async function handleConfigOption(chatId, option, messageId, fetch) {
     "Make Longer",
     "Create Variation",
     "Add Emojis",
-    "Modify for Whatsapp",
-    "Modify for X",
-    "Modify for Instagram",
-    "Modify for Telegram",
   ]
+
+  const userConfig = await getUserConfig(chatId)
 
   const inlineKeyboard = options.map((optionText, index) => {
     const callbackData = `config_${
-      [
-        "correct",
-        "concise",
-        "shorter",
-        "longer",
-        "variation",
-        "emojis",
-        "whatsapp",
-        "x",
-        "instagram",
-        "telegram",
-      ][index]
+      ["correct", "concise", "shorter", "longer", "variation", "emojis"][index]
     }`
-    const isSelected = userConfig.includes(callbackData.replace("config_", ""))
+    const isSelected = userConfig.some(
+      config => config.name === callbackData.replace("config_", "")
+    )
     return [
       {
         text: `${isSelected ? "✅ " : ""}${optionText}`,
@@ -342,6 +346,9 @@ async function handleConfigOption(chatId, option, messageId, fetch) {
     ]
   })
 
+  inlineKeyboard.push([
+    { text: "Add Custom Command", callback_data: "custom_command" },
+  ])
   inlineKeyboard.push([
     { text: "🔵 SAVE PREFERENCES 🔵", callback_data: "save_preferences" },
   ])
@@ -363,10 +370,79 @@ async function handleConfigOption(chatId, option, messageId, fetch) {
   )
 }
 
+async function requestCustomCommand(chatId, fetch) {
+  conversationHistory[chatId].push({
+    role: "system",
+    content: "Waiting for custom command",
+  })
+
+  await fetch(
+    `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: "Please enter your custom command. For example: 'make the text concise and very clear and beautiful'",
+      }),
+    }
+  )
+}
+
+async function processCustomCommand(chatId, customCommand, fetch) {
+  const gptPrompt = `Create a JSON object for a custom text processing command. The user's input is: "${customCommand}".
+  The JSON should have two fields:
+  1. "name": A one-word name for the command (lowercase, no spaces).
+  2. "prompt": The full command to be sent to GPT, formatted similarly to: "Correct grammar and spelling for the following text: "
+  
+  Please ensure the "prompt" field ends with a colon and a space, ready for the user's text to be appended.`
+
+  try {
+    const gptResponse = await getGPTResponse(chatId, gptPrompt, fetch)
+    let customConfig = JSON.parse(gptResponse)
+
+    let userConfig = await getUserConfig(chatId)
+    userConfig.push(customConfig)
+    await saveUserConfig(chatId, userConfig)
+
+    await fetch(
+      `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text: `Your custom command "${customConfig.name}" has been added to your preferences.`,
+        }),
+      }
+    )
+
+    conversationHistory[chatId].pop() // Remove the "Waiting for custom command" message
+    await startConfiguration(chatId, fetch)
+  } catch (error) {
+    console.error("Error processing custom command:", error)
+    await fetch(
+      `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text: "Sorry, I couldn't process your custom command. Please try again or use the predefined options.",
+        }),
+      }
+    )
+  }
+}
+
 async function sendOptionsKeyboard(chatId, text, fetch, userConfig) {
-  const options = userConfig.map(option => {
-    const optionText = option.charAt(0).toUpperCase() + option.slice(1)
-    return [{ text: optionText, callback_data: option }]
+  const options = userConfig.map(config => {
+    return [
+      {
+        text: config.name.charAt(0).toUpperCase() + config.name.slice(1),
+        callback_data: config.name,
+      },
+    ]
   })
 
   await fetch(
@@ -387,9 +463,13 @@ async function sendOptionsKeyboard(chatId, text, fetch, userConfig) {
 
 async function editMessage(chatId, messageId, text, fetch) {
   const userConfig = await getUserConfig(chatId)
-  const options = userConfig.map(option => {
-    const optionText = option.charAt(0).toUpperCase() + option.slice(1)
-    return [{ text: optionText, callback_data: option }]
+  const options = userConfig.map(config => {
+    return [
+      {
+        text: config.name.charAt(0).toUpperCase() + config.name.slice(1),
+        callback_data: config.name,
+      },
+    ]
   })
 
   await fetch(
@@ -410,29 +490,65 @@ async function editMessage(chatId, messageId, text, fetch) {
 }
 
 async function getGPTResponse(chatId, prompt, fetch) {
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${process.env.OPEN_AI_KEY}`,
-    },
-    body: JSON.stringify({
-      model: "gpt-4o-mini",
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are Prettier, a Telegram bot designed to help users improve and modify their text.",
-        },
-        ...conversationHistory[chatId].slice(-5),
-        { role: "user", content: prompt },
-      ],
-      temperature: 0.7,
-    }),
-  })
+  try {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.OPEN_AI_KEY}`,
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a helpful assistant that processes text based on given instructions.",
+          },
+          { role: "user", content: prompt },
+        ],
+        temperature: 0.7,
+      }),
+    })
 
-  const data = await response.json()
-  const botResponse = data.choices[0].message.content
-  conversationHistory[chatId].push({ role: "assistant", content: botResponse })
-  return botResponse
+    const data = await response.json()
+    if (!data.choices || data.choices.length === 0) {
+      throw new Error("No response from GPT")
+    }
+    return data.choices[0].message.content
+  } catch (error) {
+    console.error("Error getting GPT response:", error)
+    return "Sorry, I encountered an error while processing your request. Please try again."
+  }
+}
+
+// Error handling middleware
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("Unhandled Rejection at:", promise, "reason:", reason)
+  // Application specific logging, throwing an error, or other logic here
+})
+
+// Helper function to handle API errors
+async function handleApiError(chatId, fetch, errorMessage) {
+  await fetch(
+    `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        text: errorMessage || "An error occurred. Please try again later.",
+      }),
+    }
+  )
+}
+
+// Export the main function
+module.exports = async (req, res) => {
+  try {
+    // ... (the rest of the main function remains unchanged)
+  } catch (error) {
+    console.error("Unhandled error:", error)
+    res.status(500).send("Internal Server Error")
+  }
 }
