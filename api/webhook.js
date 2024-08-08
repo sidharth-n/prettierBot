@@ -1,11 +1,18 @@
 const { createClient } = require("@libsql/client")
+const { Configuration, OpenAIApi } = require("openai")
 
 const client = createClient({
   url: process.env.TURSO_DATABASE_URL,
   authToken: process.env.TURSO_AUTH_TOKEN,
 })
 
+const configuration = new Configuration({
+  apiKey: process.env.OPEN_AI_KEY,
+})
+const openai = new OpenAIApi(configuration)
+
 const conversationHistory = {}
+const customCommandStates = {}
 
 module.exports = async (req, res) => {
   try {
@@ -35,6 +42,8 @@ module.exports = async (req, res) => {
             await sendIntroduction(chatId, fetch)
           } else if (userText === "/config") {
             await startConfiguration(chatId, fetch)
+          } else if (customCommandStates[chatId]) {
+            await handleCustomCommandInput(chatId, userText, fetch)
           } else {
             conversationHistory[chatId].push({
               role: "user",
@@ -87,7 +96,9 @@ async function ensureUser(chatId, userInfo) {
       args: [chatId],
     })
     if (rows.length === 0) {
-      await saveUserConfig(chatId, ["correct"])
+      await saveUserConfig(chatId, [
+        { id: "correct", title: "Correct Grammar and spelling" },
+      ])
     }
   } catch (error) {
     console.error(`Error ensuring user: ${error.message}`)
@@ -100,10 +111,12 @@ async function getUserConfig(chatId) {
       sql: "SELECT config FROM user_configs WHERE chat_id = ?",
       args: [chatId],
     })
-    return rows.length > 0 ? JSON.parse(rows[0].config) : ["correct"]
+    return rows.length > 0
+      ? JSON.parse(rows[0].config)
+      : [{ id: "correct", title: "Correct Grammar and spelling" }]
   } catch (error) {
     console.error(`Error getting user config: ${error.message}`)
-    return ["correct"]
+    return [{ id: "correct", title: "Correct Grammar and spelling" }]
   }
 }
 
@@ -140,7 +153,7 @@ async function sendIntroduction(chatId, fetch) {
 
 async function startConfiguration(chatId, fetch) {
   const configText =
-    "Set your prefered commands.\n\n" + "You can select multiple options."
+    "Set your preferred commands.\n\n" + "You can select multiple options."
 
   const options = [
     "Correct Grammar and spelling",
@@ -149,21 +162,56 @@ async function startConfiguration(chatId, fetch) {
     "Make Longer",
     "Create Variation",
     "Add Emojis",
+    "Add Custom Command", // New option
   ]
 
   const userConfig = await getUserConfig(chatId)
 
   const inlineKeyboard = options.map((option, index) => {
-    const callbackData = `config_${
-      ["correct", "concise", "shorter", "longer", "variation", "emojis"][index]
-    }`
-    const isSelected = userConfig.includes(callbackData.replace("config_", ""))
-    return [
-      {
-        text: `${isSelected ? "✅ " : ""}${option}`,
-        callback_data: callbackData,
-      },
-    ]
+    if (index < 6) {
+      const callbackData = `config_${
+        ["correct", "concise", "shorter", "longer", "variation", "emojis"][
+          index
+        ]
+      }`
+      const isSelected = userConfig.some(
+        item => item.id === callbackData.replace("config_", "")
+      )
+      return [
+        {
+          text: `${isSelected ? "✅ " : ""}${option}`,
+          callback_data: callbackData,
+        },
+      ]
+    } else {
+      return [
+        {
+          text: option,
+          callback_data: "add_custom_command",
+        },
+      ]
+    }
+  })
+
+  // Add custom commands to the keyboard
+  userConfig.forEach(command => {
+    if (
+      ![
+        "correct",
+        "concise",
+        "shorter",
+        "longer",
+        "variation",
+        "emojis",
+      ].includes(command.id)
+    ) {
+      inlineKeyboard.push([
+        {
+          text: `✅ ${command.title}`,
+          callback_data: `config_${command.id}`,
+        },
+      ])
+    }
   })
 
   inlineKeyboard.push([
@@ -190,6 +238,11 @@ async function handleCallbackQuery(chatId, callbackQuery, fetch) {
   const data = callbackQuery.data
   const messageId = callbackQuery.message.message_id
 
+  if (data === "add_custom_command") {
+    await handleAddCustomCommand(chatId, messageId, fetch)
+    return
+  }
+
   if (data.startsWith("config_")) {
     await handleConfigOption(
       chatId,
@@ -202,6 +255,7 @@ async function handleCallbackQuery(chatId, callbackQuery, fetch) {
 
   if (data === "save_preferences") {
     const userConfig = await getUserConfig(chatId)
+    const configText = userConfig.map(item => item.title).join(", ")
     await fetch(
       `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/editMessageText`,
       {
@@ -210,9 +264,7 @@ async function handleCallbackQuery(chatId, callbackQuery, fetch) {
         body: JSON.stringify({
           chat_id: chatId,
           message_id: messageId,
-          text: `Congratulations! Your preferences have been saved: ${userConfig.join(
-            ", "
-          )}.\n\nYou can now start sending me text to process. \n\n
+          text: `Congratulations! Your preferences have been saved: ${configText}.\n\nYou can now start sending me text to process. \n\n
           Note : Use /config anytime to edit your preferences.`,
         }),
       }
@@ -221,35 +273,17 @@ async function handleCallbackQuery(chatId, callbackQuery, fetch) {
   }
 
   const originalText = callbackQuery.message.text
+  const userConfig = await getUserConfig(chatId)
+  const selectedCommand = userConfig.find(item => item.id === data)
 
-  let prompt = ""
-  switch (data) {
-    case "correct":
-      prompt =
-        "Just correct the grammar and spelling of the following and return: "
-      break
-    case "concise":
-      prompt = "Make the following text concise and clear: "
-      break
-    case "shorter":
-      prompt =
-        "Make the following text shorter by 20% without changing its main meaning: "
-      break
-    case "longer":
-      prompt =
-        "Make the following text longer by 20% without changing its main meaning: "
-      break
-    case "variation":
-      prompt = "Create a variation of the following text with similar length: "
-      break
-    case "emojis":
-      prompt = "Add appropriate emojis to the following text: "
-      break
+  if (selectedCommand) {
+    const gptResponse = await getGPTResponse(
+      chatId,
+      `${selectedCommand.description}: ${originalText}`,
+      fetch
+    )
+    await editMessage(chatId, messageId, gptResponse, fetch)
   }
-
-  const gptResponse = await getGPTResponse(chatId, prompt + originalText, fetch)
-
-  await editMessage(chatId, messageId, gptResponse, fetch)
 
   await fetch(
     `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/answerCallbackQuery`,
@@ -265,41 +299,58 @@ async function handleCallbackQuery(chatId, callbackQuery, fetch) {
 
 async function handleConfigOption(chatId, option, messageId, fetch) {
   let userConfig = await getUserConfig(chatId)
-  if (userConfig.includes(option)) {
-    userConfig = userConfig.filter(item => item !== option)
+  const index = userConfig.findIndex(item => item.id === option)
+  if (index !== -1) {
+    userConfig.splice(index, 1)
   } else {
-    userConfig.push(option)
+    const defaultCommands = {
+      correct: {
+        id: "correct",
+        title: "Correct Grammar and spelling",
+        description: "Correct the grammar and spelling of the following text",
+      },
+      concise: {
+        id: "concise",
+        title: "Make concise and Clear",
+        description: "Make the following text concise and clear",
+      },
+      shorter: {
+        id: "shorter",
+        title: "Make Shorter",
+        description:
+          "Make the following text shorter by 20% without changing its main meaning",
+      },
+      longer: {
+        id: "longer",
+        title: "Make Longer",
+        description:
+          "Make the following text longer by 20% without changing its main meaning",
+      },
+      variation: {
+        id: "variation",
+        title: "Create Variation",
+        description:
+          "Create a variation of the following text with similar length",
+      },
+      emojis: {
+        id: "emojis",
+        title: "Add Emojis",
+        description: "Add appropriate emojis to the following text",
+      },
+    }
+    if (defaultCommands[option]) {
+      userConfig.push(defaultCommands[option])
+    }
   }
   await saveUserConfig(chatId, userConfig)
 
-  const configText =
-    "Set your prefered commands.\n\n" + "You can select multiple options."
+  await startConfiguration(chatId, fetch)
+}
 
-  const options = [
-    "Correct Grammar and spelling",
-    "Make concise and Clear",
-    "Make Shorter",
-    "Make Longer",
-    "Create Variation",
-    "Add Emojis",
-  ]
-
-  const inlineKeyboard = options.map((optionText, index) => {
-    const callbackData = `config_${
-      ["correct", "concise", "shorter", "longer", "variation", "emojis"][index]
-    }`
-    const isSelected = userConfig.includes(callbackData.replace("config_", ""))
-    return [
-      {
-        text: `${isSelected ? "✅ " : ""}${optionText}`,
-        callback_data: callbackData,
-      },
-    ]
-  })
-
-  inlineKeyboard.push([
-    { text: "🔵 SAVE PREFERENCES 🔵", callback_data: "save_preferences" },
-  ])
+async function handleAddCustomCommand(chatId, messageId, fetch) {
+  customCommandStates[chatId] = true
+  const promptText =
+    "Cool! Now you can add your own custom preferences. Just type in the command you want to add. For example: 'Make the text formatted for WhatsApp'. Make sure to start with 'Make the text...'"
 
   await fetch(
     `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/editMessageText`,
@@ -309,19 +360,111 @@ async function handleConfigOption(chatId, option, messageId, fetch) {
       body: JSON.stringify({
         chat_id: chatId,
         message_id: messageId,
-        text: configText,
-        reply_markup: {
-          inline_keyboard: inlineKeyboard,
-        },
+        text: promptText,
       }),
     }
   )
 }
 
+async function handleCustomCommandInput(chatId, userInput, fetch) {
+  if (!userInput.toLowerCase().startsWith("make the text")) {
+    await fetch(
+      `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text: "Please enter a valid text formatting command starting with 'Make the text...'. Press /config to restart.",
+        }),
+      }
+    )
+    customCommandStates[chatId] = false
+    return
+  }
+
+  const gptResponse = await validateAndCreateCustomCommand(userInput)
+  const parsedResponse = JSON.parse(gptResponse)
+
+  if (parsedResponse.isValid) {
+    let userConfig = await getUserConfig(chatId)
+    userConfig.push({
+      id: parsedResponse.id,
+      title: parsedResponse.title,
+      description: parsedResponse.description,
+    })
+    await saveUserConfig(chatId, userConfig)
+
+    await fetch(
+      `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text: `Your custom preference "${parsedResponse.title}" has been added. Use /config to select it.`,
+        }),
+      }
+    )
+  } else {
+    await fetch(
+      `https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text: "Invalid command. Please enter a valid text formatting command starting with 'Make the text...'. Press /config to restart.",
+        }),
+      }
+    )
+  }
+
+  customCommandStates[chatId] = false
+}
+
+async function validateAndCreateCustomCommand(userInput) {
+  const prompt = `
+    You are a command validator and creator for a text formatting bot. 
+    Given the following user input for a custom command, determine if it's a valid text correction command.
+    If it is valid, create a command object with an id, title, and description.
+    If it's not valid, return an object indicating it's not valid.
+    
+    User input: "${userInput}"
+    
+    Response format:
+    {
+      "isValid": boolean,
+      "id": string (kebab-case, only if valid),
+      "title": string (only if valid),
+      "description": string (only if valid)
+    }
+    
+    Example of a valid command:
+    {
+      "isValid": true,
+      "id": "whatsapp-format",
+      "title": "Format for WhatsApp",
+      "description": "Make the text formatted for WhatsApp"
+    }
+    
+    Example of an invalid command:
+    {
+      "isValid": false
+    }
+  `
+
+  const response = await openai.createChatCompletion({
+    model: "gpt-4o-mini",
+    messages: [{ role: "user", content: prompt }],
+    temperature: 0.7,
+  })
+
+  return response.data.choices[0].message.content
+}
 async function sendOptionsKeyboard(chatId, text, fetch, userConfig) {
   const options = userConfig.map(option => {
-    const optionText = option.charAt(0).toUpperCase() + option.slice(1)
-    return [{ text: optionText, callback_data: option }]
+    return [{ text: option.title, callback_data: option.id }]
   })
 
   await fetch(
@@ -343,8 +486,7 @@ async function sendOptionsKeyboard(chatId, text, fetch, userConfig) {
 async function editMessage(chatId, messageId, text, fetch) {
   const userConfig = await getUserConfig(chatId)
   const options = userConfig.map(option => {
-    const optionText = option.charAt(0).toUpperCase() + option.slice(1)
-    return [{ text: optionText, callback_data: option }]
+    return [{ text: option.title, callback_data: option.id }]
   })
 
   await fetch(
@@ -365,29 +507,21 @@ async function editMessage(chatId, messageId, text, fetch) {
 }
 
 async function getGPTResponse(chatId, prompt, fetch) {
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${process.env.OPEN_AI_KEY}`,
-    },
-    body: JSON.stringify({
-      model: "gpt-4o-mini",
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are Prettier, a Telegram bot designed to help users improve and modify their text.",
-        },
-        ...conversationHistory[chatId].slice(-5),
-        { role: "user", content: prompt },
-      ],
-      temperature: 0.7,
-    }),
+  const response = await openai.createChatCompletion({
+    model: "gpt-4o-mini",
+    messages: [
+      {
+        role: "system",
+        content:
+          "You are Prettier, a Telegram bot designed to help users improve and modify their text.",
+      },
+      ...conversationHistory[chatId].slice(-5),
+      { role: "user", content: prompt },
+    ],
+    temperature: 0.7,
   })
 
-  const data = await response.json()
-  const botResponse = data.choices[0].message.content
+  const botResponse = response.data.choices[0].message.content
   conversationHistory[chatId].push({ role: "assistant", content: botResponse })
   return botResponse
 }
